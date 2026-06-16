@@ -1,0 +1,30 @@
+name: Build VideoVault Pro EXE
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          pip install yt-dlp customtkinter pillow pyinstaller
+      - name: Build EXE
+        run: |
+          pyinstaller --noconfirm --onedir --windowed --name "VideoVaultPro" --collect-all customtkinter --collect-all yt_dlp main.py
+      - name: Zip output
+        run: |
+          Compress-Archive -Path dist\VideoVaultPro\* -DestinationPath VideoVaultPro_Windows.zip
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoVaultPro-Windows-EXE
+          path: VideoVaultPro_Windows.zip
+          retention-days: 30
