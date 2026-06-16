@@ -8,62 +8,76 @@ import re
 from datetime import datetime
 import yt_dlp
 
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
+ctk.set_appearance_mode("light")
+ctk.set_default_color_theme("green")
 
-COLORS = {
-    "bg":       "#0F0F1A",
-    "card":     "#1A1A2E",
-    "card2":    "#16213E",
-    "accent":   "#7C4DFF",
-    "success":  "#00E676",
-    "error":    "#FF5252",
-    "warning":  "#FFD740",
-    "subtext":  "#A0A0C0",
-    "yt":       "#FF4444",
-    "tt":       "#69C9D0",
-    "fb":       "#4299F7",
+# ── Color scheme ─────────────────────────────────────────────────────────────
+C = {
+    "bg":        "#F0F4F0",
+    "card":      "#FFFFFF",
+    "card2":     "#F8FFF8",
+    "header":    "#1B5E20",
+    "accent":    "#2E7D32",
+    "accent2":   "#43A047",
+    "subtext":   "#555555",
+    "logbg":     "#1A1A1A",
+    "logtext":   "#E0FFE0",
+    # platform colours
+    "yt_btn":    "#D32F2F",
+    "yt_hover":  "#B71C1C",
+    "yt_text":   "#FF5252",
+    "tt_btn":    "#F9A825",
+    "tt_hover":  "#F57F17",
+    "tt_text":   "#FFD740",
+    "fb_btn":    "#1565C0",
+    "fb_hover":  "#0D47A1",
+    "fb_text":   "#64B5F6",
+    "success":   "#00C853",
+    "error":     "#D50000",
+    "warning":   "#FF6D00",
+    "info":      "#0288D1",
 }
 
+# ── Platform detection ────────────────────────────────────────────────────────
 
 def detect_platform(url: str) -> str:
     u = url.lower()
-    if "youtube.com" in u or "youtu.be" in u:
-        return "youtube"
-    if "tiktok.com" in u:
-        return "tiktok"
-    if "facebook.com" in u or "fb.com" in u or "fb.watch" in u:
-        return "facebook"
+    if "youtube.com" in u or "youtu.be" in u: return "youtube"
+    if "tiktok.com" in u:                      return "tiktok"
+    if "facebook.com" in u or "fb.com" in u or "fb.watch" in u: return "facebook"
     return "unknown"
 
-
-def is_single_video(url: str) -> bool:
+def is_single(url: str) -> bool:
     u = url.lower()
-    if "youtube.com/watch" in u or "youtu.be/" in u:
-        return True
-    if re.search(r"tiktok\.com/@[^/]+/video/\d+", u):
-        return True
-    if "facebook.com/watch" in u or "fb.watch" in u or re.search(r"/videos/\d+", u):
-        return True
+    if "youtube.com/watch" in u or "youtu.be/" in u: return True
+    if re.search(r"tiktok\.com/@[^/]+/video/\d+", u): return True
+    if "facebook.com/watch" in u or "fb.watch" in u or re.search(r"/videos/\d+", u): return True
     return False
 
+def safe_filename(title: str) -> str:
+    """Keep hashtags but remove illegal filename characters."""
+    title = re.sub(r'[\\/*?"<>|]', '', title)
+    title = re.sub(r':', '-', title)
+    return title.strip()[:120]
+
+
+# ── Download Engine ───────────────────────────────────────────────────────────
 
 class DownloadEngine:
-    def __init__(self, log_cb, progress_cb, status_cb, info_cb):
-        self.log         = log_cb
-        self.set_progress = progress_cb
-        self.set_status  = status_cb
-        self.set_info    = info_cb
-        self.cancelled   = False
-        self.total       = 0
-        self.done        = 0
-        self._cur_title  = ""
+    def __init__(self, log_cb, progress_cb, status_cb, info_cb, set_theme_cb):
+        self.log        = log_cb
+        self.set_prog   = progress_cb
+        self.set_status = status_cb
+        self.set_info   = info_cb
+        self.set_theme  = set_theme_cb
+        self.cancelled  = False
+        self.total      = 0
+        self.done       = 0
+        self._title     = ""
 
-    # ── progress hook ────────────────────────────────────────────────────────
     def _hook(self, d):
         if self.cancelled:
-            raise Exception("Cancelled by user.")
-
+            raise Exception("Cancelled.")
         if d["status"] == "downloading":
             total_b  = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
             down_b   = d.get("downloaded_bytes", 0)
@@ -73,44 +87,36 @@ class DownloadEngine:
             down_mb  = down_b  / 1_048_576
             total_mb = total_b / 1_048_576
             pct      = (down_b / total_b) if total_b else 0
-            self.set_progress(pct)
+            self.set_prog(pct)
             self.set_status(
-                f"⬇  {pct_str}  |  {down_mb:.1f} MB / {total_mb:.1f} MB  |  {speed}  |  ETA {eta}"
+                f"⬇  {pct_str}  |  {down_mb:.1f} MB / {total_mb:.1f} MB  |  🚀 {speed}  |  ⏱ ETA {eta}"
             )
-            if self.total > 1:
-                self.set_info(f"Video {self.done + 1} of {self.total}  —  {self._cur_title[:55]}")
-            else:
-                self.set_info(self._cur_title[:70])
-
+            count = f"Video {self.done+1} of {self.total}  —  " if self.total > 1 else ""
+            self.set_info(f"{count}{self._title[:60]}")
         elif d["status"] == "finished":
-            self.set_progress(1.0)
+            self.set_prog(1.0)
 
     def _post_hook(self, d):
         if d["status"] == "finished":
             self.done += 1
-            filename = os.path.basename(d.get("filename", ""))
-            size_b   = os.path.getsize(d["filename"]) if os.path.isfile(d.get("filename","")) else 0
-            size_mb  = size_b / 1_048_576
-            self.log(
-                f"✅ [{self.done}/{self.total}]  {filename}  ({size_mb:.1f} MB)",
-                "success"
-            )
+            fname   = d.get("filename", "")
+            size_mb = os.path.getsize(fname) / 1_048_576 if fname and os.path.isfile(fname) else 0
+            self.log(f"✅ [{self.done}/{self.total}]  {os.path.basename(fname)}  ({size_mb:.1f} MB)", "success")
             if self.total > 0:
-                self.set_progress(self.done / self.total)
+                self.set_prog(self.done / self.total)
 
-    # ── shared yt-dlp options ────────────────────────────────────────────────
-    def _opts(self, out_dir: str, cookies: str = "", fmt: str = "bestvideo+bestaudio/best") -> dict:
+    def _base_opts(self, out_dir, cookies="", fmt="bestvideo+bestaudio/best"):
         o = {
-            "format":           fmt,
-            "outtmpl":          os.path.join(out_dir, "%(uploader)s - %(title)s.%(ext)s"),
+            "format":              fmt,
+            "outtmpl":             os.path.join(out_dir, "%(title)s [%(id)s].%(ext)s"),
             "merge_output_format": "mp4",
-            "progress_hooks":   [self._hook],
+            "progress_hooks":      [self._hook],
             "postprocessor_hooks": [self._post_hook],
-            "quiet":            True,
-            "no_warnings":      True,
-            "ignoreerrors":     True,
-            "retries":          8,
-            "fragment_retries": 8,
+            "quiet":               True,
+            "no_warnings":         True,
+            "ignoreerrors":        True,
+            "retries":             8,
+            "fragment_retries":    8,
             "http_headers": {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -118,18 +124,19 @@ class DownloadEngine:
                     "Chrome/124.0.0.0 Safari/537.36"
                 ),
             },
+            # keep description / hashtags in title
+            "writesubtitles":   False,
+            "writethumbnail":   False,
         }
         if cookies and os.path.isfile(cookies):
             o["cookiefile"] = cookies
         return o
 
     # ── YouTube ──────────────────────────────────────────────────────────────
-    def download_youtube(self, url: str, out_dir: str, cookies: str = "", quality: str = "best"):
-        single = is_single_video(url)
-        self.log(
-            f"🔴 YouTube — {'Single Video' if single else 'Channel / Playlist (ALL videos)'}",
-            "yt"
-        )
+    def dl_youtube(self, url, out_dir, cookies="", quality="best"):
+        single = is_single(url)
+        self.set_theme("youtube")
+        self.log(f"🔴 YouTube — {'Single Video' if single else 'Channel / Playlist — ALL videos'}", "yt")
         self.log(f"   🔗 {url}", "sub")
 
         fmt_map = {
@@ -139,401 +146,419 @@ class DownloadEngine:
             "480p":  "bestvideo[height<=480]+bestaudio/best[height<=480]",
             "audio": "bestaudio[ext=m4a]/bestaudio/best",
         }
-
-        opts = self._opts(out_dir, cookies, fmt_map.get(quality, "bestvideo+bestaudio/best"))
-
-        # For channels/playlists allow all entries
+        opts = self._base_opts(out_dir, cookies, fmt_map.get(quality, "bestvideo+bestaudio/best"))
+        opts["extractor_args"] = {"youtube": {"player_client": ["android", "web"]}}
         if not single:
             opts["noplaylist"] = False
-            opts["extract_flat"] = False
-
-        # YouTube needs these fixes
-        opts["extractor_args"] = {
-            "youtube": {
-                "player_client": ["android", "web"],
-                "skip": ["hls", "dash"],
-            }
-        }
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                self.log("🔍 Reading video info…", "info")
+                self.log("🔍 Reading info…", "info")
                 info = ydl.extract_info(url, download=False)
                 if not info:
-                    self.log("❌ ERROR: Could not read this URL.", "error")
-                    self.log("   → Make sure the link is correct.", "error")
-                    self.log("   → Try adding a cookies.txt file if video is age-restricted.", "error")
+                    self.log("❌ ERROR: Cannot read this URL.", "error")
+                    self.log("   ➜ Check the link is correct.", "error")
+                    self.log("   ➜ Add cookies.txt if video needs login.", "error")
                     return
-
-                entries = info.get("entries")
+                entries = [e for e in (info.get("entries") or []) if e]
                 if entries:
-                    entries = [e for e in entries if e]
                     self.total = len(entries)
                     self.log(f"📋 Found {self.total} videos — downloading all…", "info")
-                    for i, entry in enumerate(entries):
-                        if self.cancelled:
-                            break
-                        self._cur_title = entry.get("title", f"Video {i+1}")
-                        self.log(f"⬇  [{i+1}/{self.total}] {self._cur_title}", "sub")
-                        try:
-                            ydl.download([entry["webpage_url"]])
-                        except Exception as e:
-                            self.log(f"⚠  Skipped: {self._cur_title} — {e}", "warning")
+                    for i, e in enumerate(entries):
+                        if self.cancelled: break
+                        self._title = e.get("title", f"Video {i+1}")
+                        self.log(f"⬇  [{i+1}/{self.total}] {self._title}", "sub")
+                        try:    ydl.download([e["webpage_url"]])
+                        except Exception as ex:
+                            self.log(f"⚠  Skipped: {ex}", "warning")
                 else:
-                    self.total = 1
-                    self.done  = 0
-                    self._cur_title = info.get("title", "Video")
-                    self.log(f"🎬 Title: {self._cur_title}", "info")
-                    self.log(f"📦 Size:  ~{(info.get('filesize') or info.get('filesize_approx') or 0)/1_048_576:.1f} MB", "info")
+                    self.total = 1; self.done = 0
+                    self._title = info.get("title","Video")
+                    size = (info.get("filesize") or info.get("filesize_approx") or 0)/1_048_576
+                    self.log(f"🎬 {self._title}", "info")
+                    if size: self.log(f"📦 Size: ~{size:.1f} MB", "info")
                     ydl.download([url])
-
         except Exception as e:
             if "cancelled" not in str(e).lower():
                 self.log(f"❌ YouTube ERROR: {e}", "error")
-                self.log("   → Check your internet connection.", "error")
-                self.log("   → Try a different quality setting.", "error")
+                self.log("   ➜ Try a different quality or add cookies.txt", "error")
 
     # ── TikTok ───────────────────────────────────────────────────────────────
-    def download_tiktok(self, url: str, out_dir: str, cookies: str = ""):
-        single = is_single_video(url)
-        self.log(f"🎵 TikTok — {'Single Video' if single else 'Full Profile (ALL videos)'}", "tt")
+    def dl_tiktok(self, url, out_dir, cookies=""):
+        single = is_single(url)
+        self.set_theme("tiktok")
+        self.log(f"🎵 TikTok — {'Single Video' if single else 'Full Profile — ALL videos'}", "tt")
         self.log(f"   🔗 {url}", "sub")
 
-        opts = self._opts(out_dir, cookies, "best")
-        opts["outtmpl"] = os.path.join(out_dir, "%(uploader)s - %(title).80s - %(id)s.%(ext)s")
-        opts["extractor_args"] = {
-            "tiktok": {"api_hostname": ["api22-normal-c-useast2a.tiktokv.com"]}
-        }
+        opts = self._base_opts(out_dir, cookies, "best")
+        opts["outtmpl"] = os.path.join(out_dir, "%(title)s [%(id)s].%(ext)s")
+        opts["extractor_args"] = {"tiktok": {"api_hostname": ["api22-normal-c-useast2a.tiktokv.com"]}}
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                self.log("🔍 Reading profile info…", "info")
+                self.log("🔍 Reading profile…", "info")
                 info = ydl.extract_info(url, download=False)
                 if not info:
-                    self.log("❌ ERROR: Could not read TikTok URL.", "error")
-                    self.log("   → Try adding cookies.txt if profile is private.", "error")
+                    self.log("❌ ERROR: Cannot read TikTok URL.", "error")
+                    self.log("   ➜ Add cookies.txt if profile is private.", "error")
                     return
-                entries = info.get("entries")
+                entries = [e for e in (info.get("entries") or []) if e]
                 if entries:
-                    entries = [e for e in entries if e]
                     self.total = len(entries)
                     self.log(f"📋 Found {self.total} videos — downloading all…", "info")
-                    for i, entry in enumerate(entries):
-                        if self.cancelled:
-                            break
-                        self._cur_title = entry.get("title", f"Video {i+1}")
-                        self.log(f"⬇  [{i+1}/{self.total}] {self._cur_title}", "sub")
-                        try:
-                            ydl.download([entry["webpage_url"]])
-                        except Exception as e:
-                            self.log(f"⚠  Skipped: {self._cur_title} — {e}", "warning")
+                    for i, e in enumerate(entries):
+                        if self.cancelled: break
+                        self._title = e.get("title", f"Video {i+1}")
+                        self.log(f"⬇  [{i+1}/{self.total}] {self._title}", "sub")
+                        try:    ydl.download([e["webpage_url"]])
+                        except Exception as ex:
+                            self.log(f"⚠  Skipped: {ex}", "warning")
                 else:
-                    self.total = 1
-                    self.done  = 0
-                    self._cur_title = info.get("title", "Video")
-                    self.log(f"🎬 Title: {self._cur_title}", "info")
+                    self.total = 1; self.done = 0
+                    self._title = info.get("title","Video")
+                    self.log(f"🎬 {self._title}", "info")
                     ydl.download([url])
         except Exception as e:
             if "cancelled" not in str(e).lower():
                 self.log(f"❌ TikTok ERROR: {e}", "error")
 
     # ── Facebook ─────────────────────────────────────────────────────────────
-    def download_facebook(self, url: str, out_dir: str, cookies: str = ""):
-        single = is_single_video(url)
+    def dl_facebook(self, url, out_dir, cookies=""):
+        single = is_single(url)
+        self.set_theme("facebook")
         self.log(f"🔵 Facebook — {'Single Video' if single else 'Page/Profile Videos'}", "fb")
         self.log(f"   🔗 {url}", "sub")
 
         if not cookies or not os.path.isfile(cookies):
-            self.log("⚠  WARNING: No cookies file loaded!", "warning")
-            self.log("   → Facebook requires cookies to download videos.", "warning")
-            self.log("   → Load your cookies.txt file and try again.", "warning")
+            self.log("⚠  No cookies file! Facebook needs login cookies.", "warning")
+            self.log("   ➜ Load cookies.txt from Chrome extension.", "warning")
 
-        opts = self._opts(out_dir, cookies, "best")
-        opts["outtmpl"] = os.path.join(out_dir, "%(uploader)s - %(title).80s - %(id)s.%(ext)s")
+        opts = self._base_opts(out_dir, cookies, "best")
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                self.log("🔍 Reading Facebook video info…", "info")
+                self.log("🔍 Reading Facebook info…", "info")
                 info = ydl.extract_info(url, download=False)
                 if not info:
-                    self.log("❌ ERROR: Could not read Facebook URL.", "error")
-                    self.log("   → Facebook needs login cookies to download.", "error")
-                    self.log("   → Use 'Get cookies.txt LOCALLY' Chrome extension.", "error")
-                    self.log("   → Or use the Bulk Links File method below.", "error")
+                    self.log("❌ ERROR: Cannot read Facebook URL.", "error")
+                    self.log("   ➜ Load cookies.txt and try again.", "error")
+                    self.log("   ➜ Or use Bulk Links File method.", "error")
                     return
-                entries = info.get("entries")
+                entries = [e for e in (info.get("entries") or []) if e]
                 if entries:
-                    entries = [e for e in entries if e]
                     self.total = len(entries)
                     self.log(f"📋 Found {self.total} videos — downloading all…", "info")
-                    for i, entry in enumerate(entries):
-                        if self.cancelled:
-                            break
-                        self._cur_title = entry.get("title", f"Video {i+1}")
-                        self.log(f"⬇  [{i+1}/{self.total}] {self._cur_title}", "sub")
-                        try:
-                            ydl.download([entry["webpage_url"]])
-                        except Exception as e:
-                            self.log(f"⚠  Skipped: {self._cur_title} — {e}", "warning")
+                    for i, e in enumerate(entries):
+                        if self.cancelled: break
+                        self._title = e.get("title", f"Video {i+1}")
+                        self.log(f"⬇  [{i+1}/{self.total}] {self._title}", "sub")
+                        try:    ydl.download([e["webpage_url"]])
+                        except Exception as ex:
+                            self.log(f"⚠  Skipped: {ex}", "warning")
                 else:
-                    self.total = 1
-                    self.done  = 0
-                    self._cur_title = info.get("title", "Video")
-                    self.log(f"🎬 Title: {self._cur_title}", "info")
-                    size = (info.get("filesize") or info.get("filesize_approx") or 0) / 1_048_576
-                    if size:
-                        self.log(f"📦 Size:  ~{size:.1f} MB", "info")
+                    self.total = 1; self.done = 0
+                    self._title = info.get("title","Video")
+                    self.log(f"🎬 {self._title}", "info")
+                    size = (info.get("filesize") or info.get("filesize_approx") or 0)/1_048_576
+                    if size: self.log(f"📦 Size: ~{size:.1f} MB", "info")
                     ydl.download([url])
         except Exception as e:
             if "cancelled" not in str(e).lower():
                 self.log(f"❌ Facebook ERROR: {e}", "error")
-                self.log("   → Make sure cookies.txt is loaded.", "error")
+                self.log("   ➜ Make sure cookies.txt is loaded.", "error")
 
-    # ── Bulk from file ───────────────────────────────────────────────────────
-    def download_from_list(self, links: list, out_dir: str, cookies: str = ""):
-        self.total = len(links)
-        self.done  = 0
-        self.log(f"📂 Bulk File — {self.total} links found", "info")
-        self.log("─" * 50, "sub")
+    # ── Bulk list ─────────────────────────────────────────────────────────────
+    def dl_list(self, links, out_dir, cookies=""):
+        self.total = len(links); self.done = 0
+        self.log(f"📂 Bulk File — {self.total} links", "info")
+        self.log("─"*55, "sub")
         for i, url in enumerate(links, 1):
-            if self.cancelled:
-                self.log("⛔ Cancelled by user.", "warning")
-                break
+            if self.cancelled: break
             url = url.strip()
             if not url or url.startswith("#"):
-                self.total -= 1
-                continue
+                self.total -= 1; continue
             self.log(f"\n📌 Link {i} of {len(links)}", "info")
-            plat = detect_platform(url)
-            if plat == "youtube":
-                self.download_youtube(url, out_dir, cookies)
-            elif plat == "tiktok":
-                self.download_tiktok(url, out_dir, cookies)
-            else:
-                self.download_facebook(url, out_dir, cookies)
-            self.log("─" * 50, "sub")
+            p = detect_platform(url)
+            if p == "youtube":   self.dl_youtube(url, out_dir, cookies)
+            elif p == "tiktok":  self.dl_tiktok(url, out_dir, cookies)
+            else:                self.dl_facebook(url, out_dir, cookies)
+            self.log("─"*55, "sub")
 
 
-# ── Main App Window ──────────────────────────────────────────────────────────
+# ── App ───────────────────────────────────────────────────────────────────────
 
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("🎬 VideoVault Pro — YouTube + TikTok + Facebook")
-        self.geometry("1100x800")
-        self.minsize(950, 680)
-        self.configure(fg_color=COLORS["bg"])
+        self.title("Green Downloader — YouTube + TikTok + Facebook")
+        self.geometry("1120x820")
+        self.minsize(960, 700)
+        self.configure(fg_color=C["bg"])
 
-        self.out_dir    = tk.StringVar(value=os.path.join(os.path.expanduser("~"), "Downloads", "VideoVault"))
+        # Set taskbar/window icon (green circle drawn on canvas → PhotoImage)
+        self._set_icon()
+
+        self.out_dir    = tk.StringVar(value=os.path.join(os.path.expanduser("~"), "Downloads", "GreenDownloader"))
         self.cookies    = tk.StringVar()
         self.links_file = tk.StringVar()
         self.quality    = tk.StringVar(value="best")
         self.engine     = None
         self._thread    = None
+        self._cur_plat  = "none"
 
         os.makedirs(self.out_dir.get(), exist_ok=True)
         self._build_ui()
 
-    # ── UI Build ─────────────────────────────────────────────────────────────
+    def _set_icon(self):
+        """Create a green download-arrow icon."""
+        try:
+            import tkinter as tk2
+            c = tk2.Canvas(width=64, height=64, bg="#2E7D32", highlightthickness=0)
+            # draw arrow
+            c.create_polygon(20,10, 44,10, 44,35, 56,35, 32,56, 8,35, 20,35,
+                             fill="white", outline="")
+            c.update()
+            img = tk.PhotoImage(width=64, height=64)
+            # simple green square icon fallback
+            img.put("#2E7D32", to=(0,0,64,64))
+            img.put("white",   to=(24,8,40,36))
+            img.put("white",   to=(16,28,48,40))
+            self.iconphoto(True, img)
+        except Exception:
+            pass
+
+    # ── UI ────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         # Header
-        hdr = ctk.CTkFrame(self, fg_color=COLORS["card"], corner_radius=0, height=74)
+        hdr = ctk.CTkFrame(self, fg_color=C["header"], corner_radius=0, height=76)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-        ctk.CTkLabel(hdr, text="  🎬  VideoVault Pro",
+        ctk.CTkLabel(hdr, text="  🟢  Green Downloader",
                      font=ctk.CTkFont(size=28, weight="bold"),
-                     text_color="#FFFFFF").pack(side="left", padx=24)
-        ctk.CTkLabel(hdr, text="🔴 YouTube   🎵 TikTok   🔵 Facebook",
-                     font=ctk.CTkFont(size=13), text_color=COLORS["subtext"]).pack(side="left", padx=10)
+                     text_color="#FFFFFF").pack(side="left", padx=22)
+        ctk.CTkLabel(hdr, text="🔴 YouTube   🟡 TikTok   🔵 Facebook",
+                     font=ctk.CTkFont(size=13), text_color="#A5D6A7").pack(side="left", padx=10)
 
-        # Info bar (video count + title)
-        self.info_bar = ctk.CTkLabel(
-            self, text="",
+        # Info bar
+        self.info_bar = ctk.CTkLabel(self, text="",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS["warning"], fg_color=COLORS["card2"],
-            height=28,
-        )
+            text_color=C["accent"], fg_color="#E8F5E9", height=30)
         self.info_bar.pack(fill="x")
 
         # Body
-        body = ctk.CTkFrame(self, fg_color=COLORS["bg"])
-        body.pack(fill="both", expand=True, padx=14, pady=(10, 0))
+        body = ctk.CTkFrame(self, fg_color=C["bg"])
+        body.pack(fill="both", expand=True, padx=14, pady=(10,0))
 
-        left = ctk.CTkFrame(body, fg_color=COLORS["card"], corner_radius=14, width=450)
-        left.pack(side="left", fill="y", padx=(0, 10))
-        left.pack_propagate(False)
+        self.left = ctk.CTkFrame(body, fg_color=C["card"], corner_radius=14, width=460)
+        self.left.pack(side="left", fill="y", padx=(0,10))
+        self.left.pack_propagate(False)
 
-        right = ctk.CTkFrame(body, fg_color=COLORS["card2"], corner_radius=14)
+        right = ctk.CTkFrame(body, fg_color=C["card2"], corner_radius=14)
         right.pack(side="left", fill="both", expand=True)
 
-        self._build_left(left)
+        self._build_left(self.left)
         self._build_log(right)
         self._build_bottom()
 
-    def _sec(self, p, text):
-        if text:
-            ctk.CTkLabel(p, text=text,
-                         font=ctk.CTkFont(size=12, weight="bold"),
-                         text_color=COLORS["accent"]).pack(anchor="w", padx=14, pady=(12, 2))
+    def _sec(self, p, txt):
+        if txt:
+            ctk.CTkLabel(p, text=txt,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color=C["accent"]).pack(anchor="w", padx=14, pady=(12,2))
 
     def _build_left(self, parent):
-        sc = ctk.CTkScrollableFrame(parent, fg_color="transparent")
+        sc = ctk.CTkScrollableFrame(parent, fg_color="transparent",
+                                    scrollbar_button_color=C["accent2"])
         sc.pack(fill="both", expand=True, padx=4, pady=4)
 
         # URL
         self._sec(sc, "🔗  Paste Any Video or Profile Link")
-        self.url_entry = ctk.CTkEntry(sc,
+        self.url_e = ctk.CTkEntry(sc,
             placeholder_text="YouTube / TikTok / Facebook URL…",
             height=46, font=ctk.CTkFont(size=13),
-            fg_color="#0F0F1A", border_color=COLORS["accent"], text_color="white")
-        self.url_entry.pack(fill="x", padx=12, pady=(4, 4))
+            fg_color="#F1F8E9", border_color=C["accent"],
+            text_color="#212121")
+        self.url_e.pack(fill="x", padx=12, pady=(4,4))
 
-        self.plat_lbl = ctk.CTkLabel(sc, text="⚡ Auto-detect platform",
-            font=ctk.CTkFont(size=11), text_color=COLORS["subtext"])
-        self.plat_lbl.pack(anchor="w", padx=14, pady=(0, 6))
-        self.url_entry.bind("<KeyRelease>", self._on_url)
+        self.plat_lbl = ctk.CTkLabel(sc, text="⚡ Platform auto-detected when you paste link",
+            font=ctk.CTkFont(size=11), text_color=C["subtext"])
+        self.plat_lbl.pack(anchor="w", padx=14, pady=(0,6))
+        self.url_e.bind("<KeyRelease>", self._on_url)
 
         # Quality
         self._sec(sc, "📺  Quality  (YouTube)")
         qr = ctk.CTkFrame(sc, fg_color="transparent")
-        qr.pack(fill="x", padx=12, pady=(4, 10))
-        for q in ["best", "1080p", "720p", "480p", "audio"]:
+        qr.pack(fill="x", padx=12, pady=(4,10))
+        for q in ["best","1080p","720p","480p","audio"]:
             ctk.CTkRadioButton(qr, text=q, variable=self.quality, value=q,
-                font=ctk.CTkFont(size=12), fg_color=COLORS["accent"]).pack(side="left", padx=(0,10))
+                font=ctk.CTkFont(size=12), fg_color=C["accent"],
+                hover_color=C["accent2"]).pack(side="left", padx=(0,10))
 
         # Save folder
         self._sec(sc, "📁  Save Videos To")
         dr = ctk.CTkFrame(sc, fg_color="transparent")
-        dr.pack(fill="x", padx=12, pady=(4, 10))
+        dr.pack(fill="x", padx=12, pady=(4,10))
         ctk.CTkEntry(dr, textvariable=self.out_dir,
             font=ctk.CTkFont(size=11), height=38,
-            fg_color="#0F0F1A", text_color="white").pack(side="left", fill="x", expand=True, padx=(0,6))
+            fg_color="#F1F8E9", text_color="#212121").pack(side="left", fill="x", expand=True, padx=(0,6))
         ctk.CTkButton(dr, text="Browse", width=80, height=38,
-            fg_color=COLORS["accent"], hover_color="#5a35cc",
-            command=self._pick_dir).pack(side="left")
+            fg_color=C["accent"], hover_color=C["accent2"],
+            text_color="white", command=self._pick_dir).pack(side="left")
 
         # Cookies
-        self._sec(sc, "🍪  Cookies File  (required for Facebook & private videos)")
+        self._sec(sc, "🍪  Cookies File  (Facebook & private videos)")
         ckr = ctk.CTkFrame(sc, fg_color="transparent")
-        ckr.pack(fill="x", padx=12, pady=(4, 2))
+        ckr.pack(fill="x", padx=12, pady=(4,2))
         ctk.CTkEntry(ckr, textvariable=self.cookies,
-            placeholder_text="cookies.txt — export from your browser",
+            placeholder_text="cookies.txt — from Chrome extension",
             font=ctk.CTkFont(size=11), height=38,
-            fg_color="#0F0F1A", text_color="white").pack(side="left", fill="x", expand=True, padx=(0,6))
+            fg_color="#F1F8E9", text_color="#212121").pack(side="left", fill="x", expand=True, padx=(0,6))
         ctk.CTkButton(ckr, text="Browse", width=80, height=38,
-            fg_color="#2a2a55", hover_color="#3a3a77",
+            fg_color="#546E7A", hover_color="#37474F", text_color="white",
             command=self._pick_cookies).pack(side="left")
-
         ctk.CTkLabel(sc,
-            text="  ℹ Chrome: install 'Get cookies.txt LOCALLY' → go to\n"
-                 "     facebook.com (logged in) → click extension → Export",
-            font=ctk.CTkFont(size=10), text_color=COLORS["subtext"], justify="left"
-        ).pack(anchor="w", padx=12, pady=(2, 10))
+            text="  ℹ Chrome → install 'Get cookies.txt LOCALLY' → login to Facebook\n"
+                 "     → click extension → Export cookies → load file here",
+            font=ctk.CTkFont(size=10), text_color=C["subtext"], justify="left"
+        ).pack(anchor="w", padx=12, pady=(2,10))
 
         # Facebook bulk
-        self._sec(sc, "📄  Facebook Bulk — Links .txt File")
+        self._sec(sc, "📄  Facebook Bulk Links File  (one URL per line)")
         flr = ctk.CTkFrame(sc, fg_color="transparent")
-        flr.pack(fill="x", padx=12, pady=(4, 4))
+        flr.pack(fill="x", padx=12, pady=(4,4))
         ctk.CTkEntry(flr, textvariable=self.links_file,
             placeholder_text="links.txt — one Facebook video URL per line",
             font=ctk.CTkFont(size=11), height=38,
-            fg_color="#0F0F1A", text_color="white").pack(side="left", fill="x", expand=True, padx=(0,6))
+            fg_color="#F1F8E9", text_color="#212121").pack(side="left", fill="x", expand=True, padx=(0,6))
         ctk.CTkButton(flr, text="Browse", width=80, height=38,
-            fg_color="#2a2a55", hover_color="#3a3a77",
+            fg_color="#546E7A", hover_color="#37474F", text_color="white",
             command=self._pick_links).pack(side="left")
-
         ctk.CTkLabel(sc,
-            text="  ℹ How to get Facebook links:\n"
-                 "     1. Go to Facebook profile → Videos tab\n"
-                 "     2. Copy each video link\n"
-                 "     3. Paste into a .txt file, one link per line\n"
-                 "     4. Load that file here → click Download All",
-            font=ctk.CTkFont(size=10), text_color=COLORS["subtext"], justify="left"
-        ).pack(anchor="w", padx=12, pady=(2, 6))
+            text="  ℹ How to get Facebook video links:\n"
+                 "     1. Open Facebook profile → click Videos tab\n"
+                 "     2. Right-click each video → Copy link\n"
+                 "     3. Paste into Notepad, one link per line\n"
+                 "     4. Save as links.txt → load here → click Download All",
+            font=ctk.CTkFont(size=10), text_color=C["subtext"], justify="left"
+        ).pack(anchor="w", padx=12, pady=(2,6))
 
-        ctk.CTkButton(sc,
+        self.fb_bulk_btn = ctk.CTkButton(sc,
             text="📄  Download All Links from File",
             height=42, font=ctk.CTkFont(size=13, weight="bold"),
-            fg_color="#1877F2", hover_color="#0d5bb5", corner_radius=10,
-            command=self._start_file).pack(fill="x", padx=12, pady=(4, 10))
+            fg_color=C["fb_btn"], hover_color=C["fb_hover"],
+            text_color="white", corner_radius=10,
+            command=self._start_file)
+        self.fb_bulk_btn.pack(fill="x", padx=12, pady=(4,10))
 
-        # Big download button
+        # Main download button
         self.dl_btn = ctk.CTkButton(sc,
             text="⬇   DOWNLOAD NOW",
-            height=56, font=ctk.CTkFont(size=19, weight="bold"),
-            fg_color=COLORS["accent"], hover_color="#5a35cc", corner_radius=14,
+            height=58, font=ctk.CTkFont(size=20, weight="bold"),
+            fg_color=C["accent"], hover_color=C["accent2"],
+            text_color="white", corner_radius=14,
             command=self._start)
-        self.dl_btn.pack(fill="x", padx=12, pady=(4, 6))
+        self.dl_btn.pack(fill="x", padx=12, pady=(4,6))
 
         self.cancel_btn = ctk.CTkButton(sc,
             text="✖  Cancel",
             height=36, font=ctk.CTkFont(size=13),
-            fg_color="#3a1a1a", hover_color="#661111", corner_radius=8,
+            fg_color="#B71C1C", hover_color="#7F0000",
+            text_color="white", corner_radius=8,
             command=self._cancel, state="disabled")
-        self.cancel_btn.pack(fill="x", padx=12, pady=(0, 16))
+        self.cancel_btn.pack(fill="x", padx=12, pady=(0,16))
 
     def _build_log(self, parent):
         ctk.CTkLabel(parent, text="📋  Download Log",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COLORS["accent"]).pack(anchor="w", padx=12, pady=(10, 4))
+            text_color=C["accent"]).pack(anchor="w", padx=12, pady=(10,4))
 
         self.log_box = ctk.CTkTextbox(parent,
             font=ctk.CTkFont(family="Consolas", size=12),
-            fg_color="#0A0A16", text_color="#CCCCFF",
+            fg_color=C["logbg"], text_color=C["logtext"],
             wrap="word", state="disabled", corner_radius=10)
-        self.log_box.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        self.log_box.pack(fill="both", expand=True, padx=10, pady=(0,6))
 
         tb = self.log_box._textbox
-        tb.tag_config("success",  foreground=COLORS["success"])
-        tb.tag_config("error",    foreground=COLORS["error"])
-        tb.tag_config("warning",  foreground=COLORS["warning"])
-        tb.tag_config("info",     foreground="#64B5F6")
-        tb.tag_config("sub",      foreground=COLORS["subtext"])
-        tb.tag_config("yt",       foreground=COLORS["yt"])
-        tb.tag_config("tt",       foreground=COLORS["tt"])
-        tb.tag_config("fb",       foreground=COLORS["fb"])
+        tb.tag_config("success", foreground="#00E676")
+        tb.tag_config("error",   foreground="#FF5252")
+        tb.tag_config("warning", foreground="#FFD740")
+        tb.tag_config("info",    foreground="#64B5F6")
+        tb.tag_config("sub",     foreground="#888888")
+        tb.tag_config("yt",      foreground="#FF5252")
+        tb.tag_config("tt",      foreground="#FFD740")
+        tb.tag_config("fb",      foreground="#64B5F6")
 
         br = ctk.CTkFrame(parent, fg_color="transparent")
-        br.pack(fill="x", padx=10, pady=(0, 10))
+        br.pack(fill="x", padx=10, pady=(0,10))
         ctk.CTkButton(br, text="🗑 Clear Log", width=110, height=32,
-            fg_color="#222244", hover_color="#333366",
+            fg_color="#546E7A", hover_color="#37474F", text_color="white",
             command=self._clear_log).pack(side="left")
-        ctk.CTkButton(br, text="📂 Open Folder", width=130, height=32,
-            fg_color="#1a3322", hover_color="#224433",
+        ctk.CTkButton(br, text="📂 Open Folder", width=140, height=32,
+            fg_color=C["accent"], hover_color=C["accent2"], text_color="white",
             command=self._open_folder).pack(side="left", padx=8)
 
     def _build_bottom(self):
-        bot = ctk.CTkFrame(self, fg_color=COLORS["card"], height=66, corner_radius=0)
-        bot.pack(fill="x", pady=(8, 0))
-        bot.pack_propagate(False)
+        self.bot = ctk.CTkFrame(self, fg_color=C["header"], height=68, corner_radius=0)
+        self.bot.pack(fill="x", pady=(8,0))
+        self.bot.pack_propagate(False)
 
-        self.progress = ctk.CTkProgressBar(bot, height=12,
-            progress_color=COLORS["accent"], fg_color="#0F0F1A")
+        self.progress = ctk.CTkProgressBar(self.bot, height=14,
+            progress_color=C["accent2"], fg_color="#0A2A0A")
         self.progress.set(0)
-        self.progress.pack(fill="x", padx=20, pady=(10, 2))
+        self.progress.pack(fill="x", padx=20, pady=(10,2))
 
-        self.status_lbl = ctk.CTkLabel(bot,
-            text="Ready — paste a link above and click DOWNLOAD NOW",
-            font=ctk.CTkFont(size=11), text_color=COLORS["subtext"])
-        self.status_lbl.pack(pady=(0, 6))
+        self.status_lbl = ctk.CTkLabel(self.bot,
+            text="Ready — paste a link and click DOWNLOAD NOW",
+            font=ctk.CTkFont(size=11), text_color="#A5D6A7")
+        self.status_lbl.pack(pady=(0,6))
+
+    # ── Theme switcher (changes colours per platform) ─────────────────────────
+    def _apply_theme(self, platform: str):
+        if platform == self._cur_plat:
+            return
+        self._cur_plat = platform
+        if platform == "youtube":
+            btn_c = C["yt_btn"]; btn_h = C["yt_hover"]
+            prog  = C["yt_btn"]; info  = C["yt_text"]
+            hdr   = "#B71C1C"
+        elif platform == "tiktok":
+            btn_c = C["tt_btn"]; btn_h = C["tt_hover"]
+            prog  = C["tt_btn"]; info  = C["tt_text"]
+            hdr   = "#E65100"
+        elif platform == "facebook":
+            btn_c = C["fb_btn"]; btn_h = C["fb_hover"]
+            prog  = C["fb_btn"]; info  = C["fb_text"]
+            hdr   = "#0D47A1"
+        else:
+            btn_c = C["accent"]; btn_h = C["accent2"]
+            prog  = C["accent2"]; info = C["accent"]
+            hdr   = C["header"]
+
+        self.dl_btn.configure(fg_color=btn_c, hover_color=btn_h)
+        self.progress.configure(progress_color=prog)
+        self.bot.configure(fg_color=hdr)
+        self.info_bar.configure(text_color=info)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
-
     def _on_url(self, _=None):
-        p = detect_platform(self.url_entry.get())
-        d = {"youtube": ("🔴 YouTube detected",  COLORS["yt"]),
-             "tiktok":  ("🎵 TikTok detected",   COLORS["tt"]),
-             "facebook":("🔵 Facebook detected", COLORS["fb"]),
-             "unknown": ("⚡ Auto-detect",        COLORS["subtext"])}
+        p = detect_platform(self.url_e.get())
+        d = {
+            "youtube":  ("🔴 YouTube detected",  C["yt_btn"]),
+            "tiktok":   ("🟡 TikTok detected",   C["tt_btn"]),
+            "facebook": ("🔵 Facebook detected", C["fb_btn"]),
+            "unknown":  ("⚡ Auto-detect",        C["subtext"]),
+        }
         self.plat_lbl.configure(text=d[p][0], text_color=d[p][1])
+        if p != "unknown":
+            self._apply_theme(p)
 
     def _pick_dir(self):
         d = filedialog.askdirectory()
         if d: self.out_dir.set(d)
 
     def _pick_cookies(self):
-        f = filedialog.askopenfilename(filetypes=[("Text/JSON","*.txt *.json"),("All","*.*")])
+        f = filedialog.askopenfilename(filetypes=[("cookies","*.txt *.json"),("All","*.*")])
         if f: self.cookies.set(f)
 
     def _pick_links(self):
@@ -541,31 +566,28 @@ class App(ctk.CTk):
         if f: self.links_file.set(f)
 
     def _open_folder(self):
-        p = self.out_dir.get()
-        os.makedirs(p, exist_ok=True)
-        if sys.platform == "win32":   os.startfile(p)
-        elif sys.platform == "darwin": os.system(f'open "{p}"')
-        else:                          os.system(f'xdg-open "{p}"')
+        p = self.out_dir.get(); os.makedirs(p, exist_ok=True)
+        if sys.platform=="win32":    os.startfile(p)
+        elif sys.platform=="darwin": os.system(f'open "{p}"')
+        else:                        os.system(f'xdg-open "{p}"')
 
     def _clear_log(self):
         self.log_box.configure(state="normal")
-        self.log_box.delete("0.0", "end")
+        self.log_box.delete("0.0","end")
         self.log_box.configure(state="disabled")
 
-    def _log(self, msg: str, tag: str = ""):
+    def _log(self, msg, tag=""):
         ts   = datetime.now().strftime("%H:%M:%S")
         line = f"[{ts}] {msg}\n"
         self.log_box.configure(state="normal")
-        if tag:
-            self.log_box._textbox.insert("end", line, tag)
-        else:
-            self.log_box.insert("end", line)
+        if tag: self.log_box._textbox.insert("end", line, tag)
+        else:   self.log_box.insert("end", line)
         self.log_box.configure(state="disabled")
         self.log_box.see("end")
 
-    def _set_progress(self, v):  self.progress.set(v)
-    def _set_status(self, t):    self.status_lbl.configure(text=t)
-    def _set_info(self, t):      self.info_bar.configure(text="  " + t)
+    def _set_prog(self, v):   self.progress.set(v)
+    def _set_status(self, t): self.status_lbl.configure(text=t)
+    def _set_info(self, t):   self.info_bar.configure(text="  "+t)
 
     def _busy(self): return self._thread and self._thread.is_alive()
 
@@ -577,78 +599,79 @@ class App(ctk.CTk):
         if self.engine: self.engine.cancelled = True
         self._log("⚠ Cancel requested…", "warning")
 
-    # ── Start download ────────────────────────────────────────────────────────
-
+    # ── Start ─────────────────────────────────────────────────────────────────
     def _start(self):
         if self._busy():
-            messagebox.showinfo("Busy", "Download already running.")
-            return
-        url = self.url_entry.get().strip()
+            messagebox.showinfo("Busy","Download already running."); return
+        url = self.url_e.get().strip()
         if not url:
-            messagebox.showwarning("No URL", "Please paste a link first.")
-            return
-        out = self.out_dir.get().strip()
-        os.makedirs(out, exist_ok=True)
+            messagebox.showwarning("No URL","Please paste a link first."); return
+        out = self.out_dir.get().strip(); os.makedirs(out, exist_ok=True)
 
-        self.engine  = DownloadEngine(self._log, self._set_progress, self._set_status, self._set_info)
-        plat         = detect_platform(url)
-        cookies      = self.cookies.get().strip()
-        quality      = self.quality.get()
+        plat    = detect_platform(url)
+        cookies = self.cookies.get().strip()
+        quality = self.quality.get()
+        self._apply_theme(plat)
+
+        self.engine = DownloadEngine(
+            self._log, self._set_prog, self._set_status,
+            self._set_info, self._apply_theme
+        )
 
         def run():
             self._set_dl(True)
             self._set_status("Starting…")
-            self._log("=" * 55, "sub")
+            self._log("="*55, "sub")
             try:
-                if plat == "youtube":
-                    self.engine.download_youtube(url, out, cookies, quality)
-                elif plat == "tiktok":
-                    self.engine.download_tiktok(url, out, cookies)
-                elif plat == "facebook":
-                    self.engine.download_facebook(url, out, cookies)
+                if plat=="youtube":   self.engine.dl_youtube(url, out, cookies, quality)
+                elif plat=="tiktok":  self.engine.dl_tiktok(url, out, cookies)
+                elif plat=="facebook":self.engine.dl_facebook(url, out, cookies)
                 else:
-                    self._log("❓ Unknown platform — trying as YouTube…", "warning")
-                    self.engine.download_youtube(url, out, cookies, quality)
+                    self._log("❓ Unknown platform — trying as YouTube…","warning")
+                    self.engine.dl_youtube(url, out, cookies, quality)
             finally:
-                done = not self.engine.cancelled
+                ok = not self.engine.cancelled
                 self._set_dl(False)
-                self._set_status("✅ All done!" if done else "⛔ Cancelled")
-                self._set_info("✅ Finished!" if done else "⛔ Cancelled")
-                self._log("=" * 55, "sub")
+                self._set_status("✅ All done!" if ok else "⛔ Cancelled")
+                self._set_info("✅ Finished!" if ok else "⛔ Cancelled")
+                self._apply_theme("none")
+                self._log("="*55,"sub")
 
         self._thread = threading.Thread(target=run, daemon=True)
         self._thread.start()
 
     def _start_file(self):
         if self._busy():
-            messagebox.showinfo("Busy", "Download already running.")
-            return
+            messagebox.showinfo("Busy","Download already running."); return
         path = self.links_file.get().strip()
         if not path or not os.path.isfile(path):
-            messagebox.showwarning("No file", "Please select a links .txt file.")
-            return
+            messagebox.showwarning("No file","Please select a links .txt file."); return
         with open(path, encoding="utf-8", errors="ignore") as f:
             links = [l.strip() for l in f if l.strip() and not l.startswith("#")]
         if not links:
-            messagebox.showwarning("Empty", "No links found in file.")
-            return
-        out     = self.out_dir.get().strip()
-        os.makedirs(out, exist_ok=True)
+            messagebox.showwarning("Empty","No links found in file."); return
+
+        out     = self.out_dir.get().strip(); os.makedirs(out, exist_ok=True)
         cookies = self.cookies.get().strip()
-        self.engine = DownloadEngine(self._log, self._set_progress, self._set_status, self._set_info)
+        self._apply_theme("facebook")
+        self.engine = DownloadEngine(
+            self._log, self._set_prog, self._set_status,
+            self._set_info, self._apply_theme
+        )
 
         def run():
             self._set_dl(True)
             self._set_status("Bulk download starting…")
-            self._log("=" * 55, "sub")
+            self._log("="*55,"sub")
             try:
-                self.engine.download_from_list(links, out, cookies)
+                self.engine.dl_list(links, out, cookies)
             finally:
-                done = not self.engine.cancelled
+                ok = not self.engine.cancelled
                 self._set_dl(False)
-                self._set_status("✅ All done!" if done else "⛔ Cancelled")
-                self._set_info("✅ Finished!" if done else "⛔ Cancelled")
-                self._log("=" * 55, "sub")
+                self._set_status("✅ All done!" if ok else "⛔ Cancelled")
+                self._set_info("✅ Finished!" if ok else "⛔ Cancelled")
+                self._apply_theme("none")
+                self._log("="*55,"sub")
 
         self._thread = threading.Thread(target=run, daemon=True)
         self._thread.start()
